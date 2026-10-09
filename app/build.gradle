@@ -3,7 +3,7 @@ plugins {
 }
 
 // Updates a file during compilation
-// Used to replace instances of 'com.raylib.nbapp'
+// Used to replace instances of 'com.raylib.raymob'
 def updateFile(filePath, toReplace, replacement) {
     def file = file(filePath)
     def modifiedContent = file.text.replaceAll(toReplace, replacement)
@@ -57,7 +57,7 @@ android {
         // Substitution variables for the manifest
         manifestPlaceholders = [
             'GL_VERSION_CODE': getGLVersionCode(project.properties['gl.version']) ?: "0x00020000",
-            'APP_LIB_NAME': project.properties['app.native_library_name'] ?: "nbapp",
+            'APP_LIB_NAME': project.properties['app.native_library_name'] ?: "raymob",
             'APP_ORIENTATION': project.properties['app.orientation'] ?: "landscape",
             'APP_CATEGORY': project.properties['app.category'] ?: "DEFAULT",
             'REQUIRE_INTERNET': project.properties['requirements.internet'] ?: "false",
@@ -69,7 +69,7 @@ android {
         // Give to CMake the name of the library
         externalNativeBuild {
             cmake {
-                def nativeLibName = project.findProperty('app.native_library_name') ?: 'nbapp'
+                def nativeLibName = project.findProperty('app.native_library_name') ?: 'raymob'
                 def glVersion = project.findProperty('gl.version') ?: 'ES20'
 
                 arguments "-DPLATFORM=Android",
@@ -82,8 +82,8 @@ android {
         applicationVariants.all { variant ->
             // Change output names to the correct ones
             variant.outputs.all {
-                outputFileName = outputFileName.replace("com.raylib.nbapp", project.properties['app.application_id'])
-                outputFileName = outputFileName.replace("nbapp", project.properties['app.native_library_name'])
+                outputFileName = outputFileName.replace("com.raylib.raymob", project.properties['app.application_id'])
+                outputFileName = outputFileName.replace("raymob", project.properties['app.native_library_name'])
             }
         }
 
@@ -93,19 +93,19 @@ android {
     preBuild.doLast {
 
         // Modify the package name and library name in NativeLoader.java
-        updateFile("src/main/java/com/raylib/nbapp/NativeLoader.java", "package com.raylib.nbapp;", "package " + project.properties['app.application_id'] + ";")
-        updateFile("src/main/java/com/raylib/nbapp/NativeLoader.java", "System.loadLibrary\\(\"nbapp\"\\);", "System.loadLibrary\\(\"" + project.properties['app.native_library_name'] + "\"\\);")
+        updateFile("src/main/java/com/raylib/raymob/NativeLoader.java", "package com.raylib.raymob;", "package " + project.properties['app.application_id'] + ";")
+        updateFile("src/main/java/com/raylib/raymob/NativeLoader.java", "System.loadLibrary\\(\"raymob\"\\);", "System.loadLibrary\\(\"" + project.properties['app.native_library_name'] + "\"\\);")
 
         // Modify the package name and library name in other java classes
-        updateFile("src/main/java/com/raylib/nbapp/DisplayManager.java", "package com.raylib.nbapp;", "package " + project.properties['app.application_id'] + ";")
-        updateFile("src/main/java/com/raylib/nbapp/SoftKeyboard.java", "package com.raylib.nbapp;", "package " + project.properties['app.application_id'] + ";")
+        updateFile("src/main/java/com/raylib/raymob/DisplayManager.java", "package com.raylib.raymob;", "package " + project.properties['app.application_id'] + ";")
+        updateFile("src/main/java/com/raylib/raymob/SoftKeyboard.java", "package com.raylib.raymob;", "package " + project.properties['app.application_id'] + ";")
 
         // Modify the package name in proguard-rules.pro
-        updateFile("proguard-rules.pro", "com.raylib.nbapp", project.properties['app.application_id'])
+        updateFile("proguard-rules.pro", "com.raylib.raymob", project.properties['app.application_id'])
 
-        // Modify the library name in nbapp C source
-        updateFile("src/main/cpp/deps/nbapp/display.c", "com/raylib/nbapp", project.properties['app.application_id'].replace(".", "/"))
-        updateFile("src/main/cpp/deps/nbapp/soft_keyboard.c", "com/raylib/nbapp", project.properties['app.application_id'].replace(".", "/"))
+        // Modify the library name in raymob C source
+        updateFile("src/main/cpp/deps/raymob/display.c", "com/raylib/raymob", project.properties['app.application_id'].replace(".", "/"))
+        updateFile("src/main/cpp/deps/raymob/soft_keyboard.c", "com/raylib/raymob", project.properties['app.application_id'].replace(".", "/"))
 
     }
 
@@ -113,19 +113,19 @@ android {
     gradle.buildFinished {
 
         // Restore the package name and library name in NativeLoader.java
-        updateFile("src/main/java/com/raylib/nbapp/NativeLoader.java", "package " + project.properties['app.application_id'] + ";", "package com.raylib.nbapp;")
-        updateFile("src/main/java/com/raylib/nbapp/NativeLoader.java", "System.loadLibrary\\(\"" + project.properties['app.native_library_name'] + "\"\\);", "System.loadLibrary\\(\"nbapp\"\\);")
+        updateFile("src/main/java/com/raylib/raymob/NativeLoader.java", "package " + project.properties['app.application_id'] + ";", "package com.raylib.raymob;")
+        updateFile("src/main/java/com/raylib/raymob/NativeLoader.java", "System.loadLibrary\\(\"" + project.properties['app.native_library_name'] + "\"\\);", "System.loadLibrary\\(\"raymob\"\\);")
 
         // Restore the package name and library name in other java classes
-        updateFile("src/main/java/com/raylib/nbapp/DisplayManager.java", "package " + project.properties['app.application_id'] + ";", "package com.raylib.nbapp;")
-        updateFile("src/main/java/com/raylib/nbapp/SoftKeyboard.java", "package " + project.properties['app.application_id'] + ";", "package com.raylib.nbapp;")
+        updateFile("src/main/java/com/raylib/raymob/DisplayManager.java", "package " + project.properties['app.application_id'] + ";", "package com.raylib.raymob;")
+        updateFile("src/main/java/com/raylib/raymob/SoftKeyboard.java", "package " + project.properties['app.application_id'] + ";", "package com.raylib.raymob;")
 
         // Restore the package name in proguard-rules.pro
-        updateFile("proguard-rules.pro", project.properties['app.application_id'], "com.raylib.nbapp")
+        updateFile("proguard-rules.pro", project.properties['app.application_id'], "com.raylib.raymob")
 
-        // Restore the library name in nbapp C source
-        updateFile("src/main/cpp/deps/nbapp/display.c", project.properties['app.application_id'].replace(".", "/"), "com/raylib/nbapp")
-        updateFile("src/main/cpp/deps/nbapp/soft_keyboard.c", project.properties['app.application_id'].replace(".", "/"), "com/raylib/nbapp")
+        // Restore the library name in raymob C source
+        updateFile("src/main/cpp/deps/raymob/display.c", project.properties['app.application_id'].replace(".", "/"), "com/raylib/raymob")
+        updateFile("src/main/cpp/deps/raymob/soft_keyboard.c", project.properties['app.application_id'].replace(".", "/"), "com/raylib/raymob")
 
     }
 
