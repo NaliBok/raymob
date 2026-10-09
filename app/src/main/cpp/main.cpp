@@ -1,296 +1,127 @@
-#if defined(_WIN32)
-    #define _WINSOCK_DEPRECATED_NO_WARNINGS
-    #define WIN32_LEAN_AND_MEAN
-    #define NOGDI             // Отключает Rectangle и графику Windows
-    #define NOUSER            // Отключает CloseWindow и интерфейс Windows
-#endif
-
 #include "raylib.h"
 
-// Исправляем конфликт DrawText на Windows
-#if defined(_WIN32)
-    #undef DrawText
-#endif
-
-#include <iostream>
-#include <vector>
-#include <cstring>
-
-// Настройка кроссплатформенных сокетов
-#if defined(_WIN32)
-    #include <winsock2.h>
-    #pragma comment(lib, "ws2_32.lib")
-    typedef int socklen_t;
-#else
-    #include <sys/socket.h>
-    #include <netinet/in.h>
-    #include <arpa/inet.h>
-    #include <unistd.h>
-    #include <fcntl.h>
-    typedef int SOCKET;
-    #define INVALID_SOCKET -1
-    #define closesocket close
-#endif
-
-// Константы игрового мира
-const int CELL_SIZE = 30;
-const int COLS = 26;
-const int ROWS = 16;
-const int SCREEN_WIDTH = COLS * CELL_SIZE;
-const int SCREEN_HEIGHT = ROWS * CELL_SIZE;
-
-enum GameState { STATE_MENU, STATE_WAITING, STATE_GAMEPING, STATE_GAMEOVER };
-enum GameStyle { STYLE_ASCII, STYLE_PIXEL };
-
-struct Vector2i { int x; int y; };
-
-// Сетевые пакеты
-struct GamePacket {
-    int posX, posY;
-    int isDead;
-};
-
-// Сетевой менеджер с поддержкой Broadcast поиска
-class NetworkManager {
-public:
-    SOCKET sock;
-    SOCKET bcastSock; 
-    sockaddr_in peerAddr;
-    bool isServer = false;
-    bool connected = false;
-
-    void Init() {
-#if defined(_WIN32)
-        WSADATA wsa; WSAStartup(MAKEWORD(2, 2), &wsa);
-#endif
-    }
-
-    void StartHost(int port) {
-        isServer = true;
-        connected = false;
-        
-        sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        SetNonBlocking(sock);
-        sockaddr_in local;
-        memset(&local, 0, sizeof(local));
-        local.sin_family = AF_INET;
-        local.sin_port = htons(port);
-        local.sin_addr.s_addr = INADDR_ANY;
-        bind(sock, (sockaddr*)&local, sizeof(local));
-
-        bcastSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        SetNonBlocking(bcastSock);
-        sockaddr_in bcastLocal;
-        memset(&bcastLocal, 0, sizeof(bcastLocal));
-        bcastLocal.sin_family = AF_INET;
-        bcastLocal.sin_port = htons(port + 1); 
-        bcastLocal.sin_addr.s_addr = INADDR_ANY;
-        bind(bcastSock, (sockaddr*)&bcastLocal, sizeof(bcastLocal));
-    }
-
-    void StartClient(const char* ip, int port) {
-        isServer = false;
-        connected = false;
-        sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        SetNonBlocking(sock);
-
-        memset(&peerAddr, 0, sizeof(peerAddr));
-        peerAddr.sin_family = AF_INET;
-        peerAddr.sin_port = htons(port);
-        peerAddr.sin_addr.s_addr = inet_addr(ip);
-    }
-
-    void SendDiscoveryBroadcast(int port) {
-        SOCKET scanSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        int broadcastEnable = 1;
-        setsockopt(scanSock, SOL_SOCKET, SO_BROADCAST, (const char*)&broadcastEnable, sizeof(broadcastEnable));
-        
-        sockaddr_in target;
-        memset(&target, 0, sizeof(target));
-        target.sin_family = AF_INET;
-        target.sin_port = htons(port + 1);
-        target.sin_addr.s_addr = INADDR_BROADCAST; 
-
-        const char* msg = "DISCOVER_SNAKE_HOST";
-        sendto(scanSock, msg, strlen(msg), 0, (sockaddr*)&target, sizeof(target));
-        closesocket(scanSock);
-    }
-
-    void HandleBroadcastRequests(int gamePort) {
-        if (!isServer) return;
-        char buf;
-        sockaddr_in from;
-        socklen_t fromLen = sizeof(from);
-        int bytes = recvfrom(bcastSock, &buf, sizeof(buf) - 1, 0, (sockaddr*)&from, &fromLen);
-        if (bytes > 0) {
-            if (buf == 'D') { // Упрощенная проверка заголовка бродкаста
-                const char* reply = "SNAKE_HOST_HERE";
-                from.sin_port = htons(gamePort); 
-                sendto(sock, reply, strlen(reply), 0, (sockaddr*)&from, sizeof(from));
-            }
-        }
-    }
-
-    void SendGameData(GamePacket p) {
-        if (isServer && !connected) return;
-        sendto(sock, (const char*)&p, sizeof(p), 0, (sockaddr*)&peerAddr, sizeof(peerAddr));
-    }
-
-    bool ReceiveGameData(GamePacket& p, char* outDiscoveredIP = nullptr) {
-        sockaddr_in from;
-        socklen_t fromLen = sizeof(from);
-        char buf[sizeof(GamePacket) + 32];
-        int bytes = recvfrom(sock, buf, sizeof(buf) - 1, 0, (sockaddr*)&from, &fromLen);
-        
-        if (bytes > 0) {
-            buf[bytes] = '\0';
-            if (!isServer && strcmp(buf, "SNAKE_HOST_HERE") == 0) {
-                if (outDiscoveredIP) {
-                    strcpy(outDiscoveredIP, inet_ntoa(from.sin_addr));
-                }
-                return false;
-            }
-            
-            if (bytes == sizeof(GamePacket)) {
-                memcpy(&p, buf, sizeof(GamePacket));
-                if (isServer && !connected) {
-                    peerAddr = from;
-                    connected = true;
-                }
-                return true;
-            }
-        }
-        return false;
-    }
-
-    void Clean() {
-        closesocket(sock);
-        if (isServer) closesocket(bcastSock);
-#if defined(_WIN32)
-        WSACleanup();
-#endif
-    }
-
-private:
-    void SetNonBlocking(SOCKET s) {
-#if defined(_WIN32)
-        unsigned long mode = 1; ioctlsocket(s, FIONBIO, &mode);
-#else
-        fcntl(s, F_SETFL, O_NONBLOCK);
-#endif
-    }
-};
-
-bool DrawButton(Rectangle rect, const char* text, Color baseColor, Color textColor) {
-    Vector2 mousePos = GetMousePosition();
-    bool hovered = CheckCollisionPointRec(mousePos, rect);
-    Color drawColor = hovered ? ColorAlpha(baseColor, 0.8f) : baseColor;
-    
-    DrawRectangleRec(rect, drawColor);
-    DrawRectangleLinesEx(rect, 2, textColor);
-    
-    int fontSize = 20;
-    int textWidth = MeasureText(text, fontSize);
-    DrawText(text, rect.x + (rect.width/2) - (textWidth/2), rect.y + (rect.height/2) - (fontSize/2), fontSize, textColor);
-    
-    return hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
-}
-
 int main() {
-    InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Flexible P2P Network Snake");
+    // Разрешаем изменение размера окна
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
+
+    // Инициализируем окно. Сразу откроем его на весь доступный экран X11
+    // (или зададим комфортное пропорциональное разрешение, например, 1080x1920 под вертикалки)
+    const int screenWidth = 1080;
+    const int screenHeight = 1920;
+    
+    InitWindow(screenWidth, screenHeight, "Castle Fight Mobile");
+
+    // Виртуальное разрешение для логики игры (вертикальный формат мобилки)
+    const int nativeWidth = 1080;
+    const int nativeHeight = 1920;
+
+    RenderTexture2D target = LoadRenderTexture(nativeWidth, nativeHeight);
+    SetTextureFilter(target.texture, TEXTURE_FILTER_BILINEAR);
+
+    int playerGold = 50;
+    int baseHp = 100;
+    int enemyHp = 100;
+    int unitsSpawned = 0;
+    
+    Vector2 lastTouch = {-1, -1};
+
     SetTargetFPS(60);
 
-    NetworkManager net;
-    net.Init();
-
-    GameState state = STATE_MENU;
-    GameStyle currentStyle = STYLE_ASCII;
-
-    char ipBuffer[16] = "192.168.1.100";
-    int ipLetterCount = strlen(ipBuffer);
-    bool ipInputActive = false;
-
-    std::vector<Vector2i> mySnake = {{5, 5}, {4, 5}, {3, 5}};
-    Vector2i myDir = {1, 0};
-    bool myDead = false;
-    Vector2i peerPos = {-1, -1};
-    bool peerDead = false;
-
-    float moveTimer = 0.0f;
-    float moveSpeed = 0.15f;
-
     while (!WindowShouldClose()) {
-        if (IsKeyPressed(KEY_SPACE)) currentStyle = (currentStyle == STYLE_ASCII) ? STYLE_PIXEL : STYLE_ASCII;
+        // --- 1. ВВОД И ЛОГИКА ---
+        Vector2 touchWorldPos = { -1, -1 };
+        bool isPressed = false;
 
-        switch (state) {
-            case STATE_MENU: {
-                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                    Vector2 m = GetMousePosition();
-                    if (CheckCollisionPointRec(m, { (float)SCREEN_WIDTH/2 - 120, 210, 240, 40 })) ipInputActive = true;
-                    else ipInputActive = false;
-                }
+        // Обработка клика мыши / тапа
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            Vector2 mousePos = GetMousePosition();
+            // Пересчет координат с учетом растягивания экрана
+            float scaleX = (float)nativeWidth / (float)GetScreenWidth();
+            float scaleY = (float)nativeHeight / (float)GetScreenHeight();
+            touchWorldPos = { mousePos.x * scaleX, mousePos.y * scaleY };
+            lastTouch = touchWorldPos;
+            isPressed = true;
+        }
 
-                if (ipInputActive) {
-                    int key = GetCharPressed();
-                    while (key > 0) {
-                        if ((key >= '0' && key <= '9') || key == '.') {
-                            if (ipLetterCount < 15) {
-                                ipBuffer[ipLetterCount] = (char)key;
-                                ipBuffer[ipLetterCount+1] = '\0';
-                                ipLetterCount++;
-                            }
-                        }
-                        key = GetCharPressed();
-                    }
-                    if (IsKeyPressed(KEY_BACKSPACE)) {
-                        ipLetterCount--;
-                        if (ipLetterCount < 0) ipLetterCount = 0;
-                        ipBuffer[ipLetterCount] = '\0';
-                    }
+        if (isPressed) {
+            // Кнопка спавна юнита (По центру внизу: X: 140..940, Y: 1500..1650)
+            if (touchWorldPos.x >= 140 && touchWorldPos.x <= 940 && touchWorldPos.y >= 1500 && touchWorldPos.y <= 1650) {
+                if (playerGold >= 15) {
+                    playerGold -= 15;
+                    unitsSpawned++;
                 }
-                break;
             }
-            case STATE_WAITING: {
-                if (net.isServer) {
-                    net.HandleBroadcastRequests(8888);
-                    GamePacket dummy;
-                    if (net.ReceiveGameData(dummy)) state = STATE_GAMEPING;
-                } else {
-                    GamePacket dummy;
-                    char discoveredIP[16] = {0};
-                    net.ReceiveGameData(dummy, discoveredIP);
-                    if (strlen(discoveredIP) > 0) {
-                        net.StartClient(discoveredIP, 8888);
-                        state = STATE_GAMEPING;
-                    }
-                }
-                break;
+            // Кнопка атаки (Ниже спавна: X: 140..940, Y: 1700..1850)
+            if (touchWorldPos.x >= 140 && touchWorldPos.x <= 940 && touchWorldPos.y >= 1700 && touchWorldPos.y <= 1850) {
+                enemyHp -= 10;
+                if (enemyHp < 0) enemyHp = 0;
             }
-            case STATE_GAMEPING: {
-                if (IsKeyPressed(KEY_W) && myDir.y != 1)  myDir = {0, -1};
-                if (IsKeyPressed(KEY_S) && myDir.y != -1) myDir = {0, 1};
-                if (IsKeyPressed(KEY_A) && myDir.x != 1)  myDir = {-1, 0};
-                if (IsKeyPressed(KEY_D) && myDir.x != -1) myDir = {1, 0};
+        }
 
-                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                    Vector2 touch = GetMousePosition();
-                    float normX = touch.x / SCREEN_WIDTH;
-                    float normY = touch.y / SCREEN_HEIGHT;
-                    if (normY < normX && normY < (1.0f - normX) && myDir.y != 1)  myDir = {0, -1};
-                    if (normY > normX && normY > (1.0f - normX) && myDir.y != -1) myDir = {0, 1};
-                    if (normX < normY && normX < (1.0f - normY) && myDir.x != 1)  myDir = {-1, 0};
-                    if (normX > normY && normX > (1.0f - normY) && myDir.x != -1) myDir = {1, 0};
-                }
+        // --- 2. ОТРИСОВКА В БУФЕР (ВЕРТИКАЛЬНЫЙ ФОРМАТ) ---
+        BeginTextureMode(target);
+            ClearBackground(RAYWHITE);
 
-                moveTimer += GetFrameTime();
-                if (moveTimer >= moveSpeed && !myDead) {
-                    moveTimer = 0.0f;
-                    for (size_t i = mySnake.size() - 1; i > 0; i--) mySnake[i] = mySnake[i - 1];
-                    mySnake[0].x += myDir.x; mySnake[0].y += myDir.y;
-if (mySnake[0].x < 0 || mySnake[0].x >= COLS || mySnake[0].y < 0 || mySnake[0].y >= ROWS) {
-myDead = true;
-}
-net.SendGameData({ mySnake[0].x, mySnake[0].y, (int)myDead });
+            // Верхняя панель статуса
+            DrawRectangle(0, 0, nativeWidth, 120, DARKGRAY);
+            DrawText(TextFormat("BASE: %d", baseHp), 50, 40, 40, RED);
+            DrawText(TextFormat("GOLD: %d", playerGold), 420, 40, 40, GOLD);
+            DrawText(TextFormat("ENEMY: %d", enemyHp), 780, 40, 40, MAROON);
+
+            // Игровое поле (Вертикальный Castle Fight: замок игрока внизу, враг вверху)
+            DrawRectangle(200, 250, 680, 100, LIGHTGRAY); // Дорога
+            
+            // Башня врага (вверху)
+            DrawRectangle(390, 200, 300, 150, RED);
+            DrawText("ENEMY CASTLE", 430, 260, 30, WHITE);
+
+            // Башня игрока (внизу)
+            DrawRectangle(390, 1250, 300, 150, BLUE);
+            DrawText("YOUR CASTLE", 440, 1310, 30, WHITE);
+
+            // Юниты на поле
+            for (int i = 0; i < unitsSpawned; i++) {
+                int posY = 1150 - (i * 80) % 800;
+                DrawCircle(540, posY, 25, DARKBLUE);
+            }
+
+            // --- НИЖНЯЯ ПАНЕЛЬ УПРАВЛЕНИЯ ---
+            DrawRectangle(0, 1450, nativeWidth, 470, BEIGE);
+
+            // Кнопка 1: Спавн
+            DrawRectangle(140, 1500, 800, 150, DARKBLUE);
+            DrawText("SPAWN UNIT (Cost: 15)", 250, 1555, 36, WHITE);
+
+            // Кнопка 2: Атака
+            DrawRectangle(140, 1700, 800, 150, MAROON);
+            DrawText("ATTACK ENEMY", 370, 1755, 36, WHITE);
+
+            // Метка последнего касания (чтобы вы видели, куда пришелся тап)
+            if (lastTouch.x != -1) {
+                DrawCircleV(lastTouch, 20, GREEN);
+            }
+
+        EndTextureMode();
+
+        // --- 3. ВЫВОД НА ЭКРАН ТЕЛЕФОНА ---
+        BeginDrawing();
+            ClearBackground(BLACK);
+
+            // Растягиваем вертикальный буфер на весь экран смартфона
+            DrawTexturePro(
+                target.texture, 
+                (Rectangle){ 0, 0, (float)nativeWidth, (float)-nativeHeight }, 
+                (Rectangle){ 0, 0, (float)GetScreenWidth(), (float)GetScreenHeight() }, 
+                (Vector2){ 0, 0 }, 0.0f, WHITE
+            );
+
+        EndDrawing();
+    }
+
+    UnloadRenderTexture(target);
+    CloseWindow();
+    return 0;
+}ameData({ mySnake[0].x, mySnake[0].y, (int)myDead });
 }
 GamePacket inPack;
 while (net.ReceiveGameData(inPack)) {
